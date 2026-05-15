@@ -7,8 +7,33 @@
 
 ## 0장. 미션 전체 그림
 
+서버 운영은 “서버가 켜져 있다”에서 끝나지 않는다.  
+서버가 어떤 사용자에게 열려 있는지, 어떤 포트로 통신하는지, 어떤 파일을 누가 읽고 쓸 수 있는지, 문제가 생겼을 때 어떤 기록을 남기는지까지 함께 관리해야 한다.
+
+처음에는 이 모든 것이 흩어진 명령어처럼 보인다.  
+`useradd`, `chmod`, `ufw`, `cron`, `tail`, `ss` 같은 명령이 각각 따로 있는 것처럼 느껴진다.
+
+하지만 운영자의 눈으로 보면 이 명령어들은 하나의 흐름으로 이어진다.
+
+서버에 들어오는 문을 정한다.  
+그 문으로 들어온 사람이 어떤 역할을 가질지 정한다.  
+역할에 따라 접근할 수 있는 공간을 나눈다.  
+앱이 실행될 환경을 만든다.  
+앱과 서버의 상태를 주기적으로 기록한다.  
+기록이 너무 커지지 않도록 보존 정책을 만든다.
+
+이 책은 그 흐름을 작은 Linux 서버 하나에서 직접 구성해 보는 기록이다.
+
+### 왜 로그가 중요한가
+
 서버 장애가 발생했을 때 로그가 없다면 원인 분석은 감에 의존하게 된다.  
-현업에서는 이런 상황이 복구 시간을 늘리고, 같은 장애를 반복시키는 직접적인 원인이 된다.
+장애가 발생한 순간 CPU가 높았는지, 메모리가 부족했는지, 디스크가 꽉 찼는지, 앱 프로세스가 죽었는지 알 수 없다.
+
+운영에서 로그는 단순한 기록이 아니다.  
+나중에 문제를 설명할 수 있게 해 주는 근거다.
+
+이번 미션의 마지막에 작성할 `monitor.sh`는 그래서 중요하다.  
+이 스크립트는 서버의 현재 상태를 사람이 매번 직접 확인하지 않아도, 일정한 형식으로 남겨 주는 작은 운영 도구가 된다.
 
 이번 미션에서는 다음 흐름을 직접 구성한다.
 
@@ -20,192 +45,404 @@
 6. cron을 이용한 주기 실행
 7. 로그 보존 정책 설계
 
-최종 산출물은 다음 2개다.
+각 단계는 따로 떨어진 과제가 아니다.  
+뒤로 갈수록 앞에서 만든 설정을 사용한다.
+
+예를 들어 `monitor.sh`는 `/var/log/agent-app`에 로그를 써야 한다.  
+그러려면 먼저 로그 디렉토리가 있어야 하고, 그 디렉토리에 쓸 수 있는 계정과 그룹 권한이 있어야 한다.  
+또 앱이 `15034` 포트에서 실행 중이어야 포트 점검도 의미가 있다.
+
+그래서 이 책은 빠르게 완성본을 만드는 방식이 아니라, 한 단계씩 이유를 확인하면서 진행한다.
+
+### 이 책에서 남길 결과물
+
+마지막에는 두 가지를 남긴다.
 
 - `README.md` 또는 별도 문서 형태의 요구사항 수행 내역서
 - `$AGENT_HOME/bin/monitor.sh` 자동화 스크립트
 
+첫 번째 결과물은 “무엇을 했다”가 아니라 “왜 그렇게 했고, 어떻게 확인했는가”를 설명하는 문서다.  
+두 번째 결과물은 사람이 하던 점검을 Bash로 자동화한 실행 파일이다.
+
 ---
 
-## 1장. 실습 환경과 주의사항
+## 1장. 실습 무대 만들기
 
-### 권장 환경
+서버 운영을 배우려면 먼저 작은 서버 한 대가 필요하다.  
+이 책에서는 그 서버를 OrbStack 안에 만든 Linux 머신으로 생각한다.
 
-- Ubuntu 22.04 LTS 또는 동등한 Linux 환경
-- VM 또는 컨테이너 실습 환경 권장
-- sudo 권한이 있는 일반 사용자
+Mac은 우리가 글을 쓰고, 파일을 정리하고, 코드를 작성하는 책상이다.  
+OrbStack의 Linux는 그 책상 위에 올려둔 작은 실험실이다.
 
-### 내 공부용 컴퓨터에서 바로 하면 안 되는 이유
+이 구분이 중요하다. 앞으로 우리는 사용자 계정을 만들고, 그룹을 나누고, 시스템 디렉토리의 권한을 바꾸고, 주기적으로 실행되는 작업을 등록할 것이다. 이런 일은 “내 노트북을 꾸미는 작업”이 아니라 “서버라는 운영 환경을 설계하는 작업”이다.
 
-이 미션은 SSH 포트, 방화벽, 사용자 계정, 시스템 디렉토리, cron 같은 운영체제 설정을 직접 바꾼다.  
-따라서 macOS나 Windows 같은 내 실제 공부용 컴퓨터에서 그대로 실행하는 것이 아니라, 별도의 Linux 실습 환경에서 진행해야 한다.
+그래서 이 책의 실습 명령어는 OrbStack의 Linux 터미널에서 실행한다.  
+README를 쓰고 수정하는 일은 macOS에서 해도 괜찮지만, 서버를 바꾸는 명령은 Linux 안에서 다룬다.
 
-특히 다음 명령들은 실습 Linux 안에서 실행되어야 한다.
+### OrbStack을 선택한 이유
+
+OrbStack은 Mac에서 Linux를 가볍게 띄워 주는 도구다.  
+무거운 가상머신을 매번 켜지 않아도 Linux 명령어, 계정, 권한, 디렉토리 구조, Bash 스크립트, cron 같은 주제를 충분히 연습할 수 있다.
+
+이 미션에서 우리가 가장 많이 다룰 내용도 바로 그 영역이다.
+
+- 계정과 그룹을 만들고 역할을 나눈다.
+- 디렉토리마다 접근 권한을 다르게 준다.
+- 제공된 Linux 애플리케이션을 실행한다.
+- Bash로 상태 점검 스크립트를 작성한다.
+- cron으로 스크립트를 주기적으로 실행한다.
+- 로그를 남기고, 오래된 로그를 관리한다.
+
+다만 OrbStack은 일반적인 클라우드 서버나 Ubuntu VM과 완전히 같지는 않다.  
+특히 SSH 서버 운영, 방화벽 정책, `systemctl`로 서비스를 제어하는 부분은 환경에 따라 다르게 보일 수 있다.
+
+이 차이는 실패가 아니다. 오히려 좋은 학습 지점이다.  
+운영자는 명령어 하나를 외우는 사람이 아니라, “내가 지금 어떤 환경 위에 있는가”를 먼저 읽는 사람이어야 하기 때문이다.
+
+### 첫 번째 확인: 나는 누구이고 어디에 있는가
+
+OrbStack의 Linux 터미널을 열었다면, 가장 먼저 지금 내가 누구인지 확인한다.
 
 ```bash
-sudo useradd ...
-sudo groupadd ...
-sudo ufw ...
-sudo systemctl ...
-sudo crontab ...
+whoami
+id
+pwd
 ```
 
-여기서 `sudo`는 “내 맥북 관리자 권한”이 아니라 “실습 Linux 안의 관리자 권한”을 뜻한다.  
-즉, 내 공부용 컴퓨터에서 `sudo`가 안 되더라도, 별도로 만든 Ubuntu VM이나 Linux 컨테이너 안에서는 root 또는 sudo 권한을 사용할 수 있어야 한다.
+`whoami`는 현재 사용자 이름을 보여준다.  
+`id`는 사용자가 속한 그룹과 권한 정보를 보여준다.  
+`pwd`는 지금 서 있는 디렉토리를 보여준다.
 
-### OrbStack을 사용해도 되는가
+이 세 명령은 짧지만 운영 작업의 출발점이다.
 
-결론부터 말하면, OrbStack의 Linux 환경은 이 미션의 일부를 연습하기에 좋다.  
-하지만 전체 요구사항을 가장 깔끔하게 만족하려면 Ubuntu VM을 더 권장한다.
+| 명령어 | 뜻 | 왜 확인하는가 |
+|---|---|---|
+| `whoami` | 현재 사용자 이름 출력 | 지금 명령을 실행하는 주체를 확인한다 |
+| `id` | UID, GID, 그룹 정보 출력 | 이 사용자가 어떤 권한 범위에 있는지 확인한다 |
+| `pwd` | 현재 디렉토리 출력 | 파일을 만들거나 복사할 위치를 착각하지 않기 위해 확인한다 |
 
-OrbStack으로 연습하기 좋은 부분:
+운영 작업은 늘 이 세 가지 감각에서 시작한다.
 
-- Bash 명령어 연습
-- 계정과 그룹 생성
-- 디렉토리 권한 설정
-- ACL 확인
-- 제공 앱 실행
-- `monitor.sh` 작성과 실행
-- `monitor.log` 누적 기록
-- cron 연습
+나는 누구인가.  
+나는 어떤 권한을 가지고 있는가.  
+나는 지금 어디에 서 있는가.
 
-OrbStack에서 애매할 수 있는 부분:
+이 질문을 생략하면 뒤에서 만나는 오류가 갑자기 튀어나온 것처럼 느껴진다.  
+반대로 이 세 가지를 먼저 확인하면 `Permission denied`, `No such file or directory`, `command not found` 같은 오류도 원인을 좁혀 갈 수 있다.
 
-- SSH 서버 자체를 운영하는 실습
-- SSH 포트를 `20022`로 바꾸고 외부 접속 검증
-- UFW/firewalld로 실제 서버 방화벽 정책을 검증
-- `systemctl`로 서비스를 제어하는 과정
+### 제공 파일 살펴보기
 
-컨테이너 계열 Linux는 호스트와 커널 또는 네트워크 계층을 공유하는 경우가 많다.  
-그래서 `ufw status`가 실행되더라도, 실제 독립 서버의 방화벽처럼 의미 있게 동작하지 않을 수 있다.
+이번 미션에서 실행할 애플리케이션은 `agent-app.zip`으로 제공된다.  
+압축 파일 안에는 Linux에서 실행할 수 있는 `agent-app` 파일이 들어 있다.
 
-제출 증거까지 안정적으로 만들려면 다음 순서를 추천한다.
+여기서 한 가지를 먼저 구분해야 한다.  
+`agent-app.zip`은 처음에는 Mac의 프로젝트 폴더 안에 있다. OrbStack의 Linux 터미널을 열었다고 해서 그 파일이 자동으로 현재 디렉토리에 놓여 있는 것은 아니다.
 
-1. 가능하면 Ubuntu 22.04 VM에서 전체 미션 수행
-2. VM이 어렵다면 OrbStack에서 앱/권한/스크립트/cron 위주로 수행
-3. SSH와 방화벽 항목은 실습 환경 한계를 수행 내역서에 명확히 기록
+먼저 Linux에서 Mac 파일 시스템이 보이는지 확인한다.
 
-### 가장 추천하는 실습 환경
+```bash
+ls -l /mnt/mac/Users
+```
 
-Mac을 사용한다면 다음 중 하나가 좋다.
+명령어를 나누어 보면 다음과 같다.
 
-| 환경 | 추천도 | 이유 |
-|---|---:|---|
-| Ubuntu 22.04 VM | 높음 | SSH, 방화벽, systemd, cron 검증이 가장 자연스럽다 |
-| OrbStack Linux | 중간 | 빠르고 편하지만 방화벽/SSH 검증이 제한될 수 있다 |
-| 로컬 macOS 터미널 | 낮음 | Linux 미션 요구사항과 다르고 시스템 변경 위험이 있다 |
+| 부분 | 의미 |
+|---|---|
+| `ls` | 파일과 디렉토리 목록을 보여준다 |
+| `-l` | 권한, 소유자, 크기, 수정 시간까지 자세히 보여준다 |
+| `/mnt/mac/Users` | OrbStack Linux에서 바라본 Mac 사용자 디렉토리 위치다 |
 
-이 문서의 명령어는 Ubuntu 22.04 VM 기준으로 작성한다.  
-OrbStack을 사용할 때는 SSH와 방화벽 부분에서 환경 차이가 있을 수 있음을 기억한다.
+OrbStack에서는 Mac의 파일을 `/mnt/mac/Users/...` 아래에서 볼 수 있다.  
+예를 들어 이 프로젝트가 Mac의 Desktop 아래에 있다면 대략 다음과 같은 경로가 된다.
 
-### 매우 중요한 주의사항
+```bash
+ls -l /mnt/mac/Users/<Mac 사용자명>/Desktop/Developing-System-Control-Automation-Scripts/agent-app.zip
+```
 
-SSH 포트를 바꾸거나 방화벽을 켜면 원격 접속이 끊길 수 있다.  
-반드시 다음 중 하나를 확보한 뒤 진행한다.
+파일이 보이면 Linux 실습용 작업 디렉토리를 하나 만들고, 그곳으로 복사한다.
 
-- VM 콘솔 접근
-- 클라우드 콘솔 접근
-- 현재 SSH 세션을 유지한 상태에서 새 포트 접속 테스트
+```bash
+mkdir -p ~/linux-server-mission
+cp /mnt/mac/Users/<Mac 사용자명>/Desktop/Developing-System-Control-Automation-Scripts/agent-app.zip ~/linux-server-mission/
+cd ~/linux-server-mission
+```
 
-실습에서는 SSH 포트를 `20022`, 앱 포트를 `15034`로 사용한다.
+여기서 하는 일은 세 가지다.
 
-### 제공 파일 확인
+| 명령어 | 뜻 | 왜 필요한가 |
+|---|---|---|
+| `mkdir -p ~/linux-server-mission` | 실습용 디렉토리를 만든다 | 앞으로의 작업 파일을 한곳에 모으기 위해서다 |
+| `cp ... ~/linux-server-mission/` | Mac 쪽 zip 파일을 Linux 작업 공간으로 복사한다 | Linux 안에서 압축 해제와 실행 준비를 하기 위해서다 |
+| `cd ~/linux-server-mission` | 작업 디렉토리로 이동한다 | 이후 명령이 같은 위치를 기준으로 실행되게 하기 위해서다 |
 
-현재 미션 폴더의 `agent-app.zip` 안에는 Linux 실행 파일 `agent-app` 하나가 들어 있다.
+`~`는 현재 사용자의 홈 디렉토리를 뜻한다.  
+`-p`는 중간 디렉토리가 없으면 함께 만들고, 이미 디렉토리가 있어도 오류로 멈추지 않게 한다.
+
+복사가 끝났다면 Linux 현재 디렉토리에서 파일이 보이는지 확인한다.
+
+```bash
+ls -l agent-app.zip
+```
+
+압축 파일을 살펴보려면 `unzip` 명령이 필요하다.  
+먼저 명령이 있는지 확인한다.
+
+```bash
+command -v unzip
+```
+
+`command -v`는 특정 명령어가 시스템 어디에 있는지 찾아본다.  
+경로가 출력되면 사용할 수 있다는 뜻이고, 아무것도 출력되지 않으면 아직 설치되어 있지 않다는 뜻이다.
+
+아무것도 출력되지 않으면 `unzip` 패키지를 설치한다.
+
+```bash
+sudo apt update
+sudo apt install -y unzip
+```
+
+이 두 줄도 의미가 다르다.
+
+| 명령어 | 뜻 |
+|---|---|
+| `sudo apt update` | 설치 가능한 패키지 목록을 최신 상태로 가져온다 |
+| `sudo apt install -y unzip` | `unzip` 패키지를 설치한다. `-y`는 질문에 자동으로 yes라고 답하게 한다 |
+
+`sudo`는 관리자 권한으로 실행한다는 뜻이다.  
+패키지 설치처럼 시스템 전체에 영향을 주는 작업은 일반 사용자 권한만으로는 할 수 없기 때문에 `sudo`가 필요하다.
+
+이제 압축 파일 안에 무엇이 들어 있는지 확인한다.
 
 ```bash
 unzip -l agent-app.zip
-file agent-app
 ```
 
-확인된 구조:
+여기서 `-l`은 압축을 풀지 않고 목록만 보겠다는 뜻이다.  
+아직 실행 파일을 꺼내지 않는 이유는, 먼저 제공 파일의 구조를 확인하는 습관을 들이기 위해서다.
+
+기대하는 구조는 단순하다.
 
 ```text
 agent-app.zip
 └── agent-app
 ```
 
-macOS나 Windows 호스트에서는 이 파일을 직접 실행할 수 없을 수 있다.  
-앱 실행 검증은 Ubuntu 22.04 LTS 또는 동등한 Linux 실습 환경에서 수행한다.
+아직 앱을 실행하지는 않는다.  
+먼저 앱이 놓일 자리, 앱을 실행할 사용자, 앱이 읽고 쓸 디렉토리의 권한을 차례로 만들어 갈 것이다.
 
-### sudo가 안 될 때 판단 기준
+### 이 책에서 사용할 기준값
 
-다음 명령으로 현재 계정이 sudo를 사용할 수 있는지 확인한다.
+앞으로의 장에서는 다음 값을 기준으로 실습을 진행한다.
 
-```bash
-whoami
-id
-sudo -v
+```text
+SSH 포트: 20022
+앱 포트: 15034
+앱 홈 디렉토리: /home/agent-admin/agent-app
+로그 디렉토리: /var/log/agent-app
 ```
 
-`sudo -v`가 실패한다면 선택지는 2가지다.
-
-첫 번째는 root 계정으로 실습하는 방법이다.  
-컨테이너나 VM에서 `whoami` 결과가 `root`라면, 명령어 앞의 `sudo`를 빼고 실행하면 된다.
-
-예:
-
-```bash
-groupadd agent-common
-useradd -m -s /bin/bash agent-admin
-mkdir -p /var/log/agent-app
-```
-
-두 번째는 sudo 가능한 일반 계정을 만드는 방법이다.  
-Ubuntu VM에서 root 접근이 가능하다면 다음처럼 만들 수 있다.
-
-```bash
-adduser student
-usermod -aG sudo student
-```
-
-그 뒤 `student` 계정으로 로그인해서 이 문서의 `sudo` 명령을 실행한다.
-
-정리하면 다음과 같다.
-
-| 현재 상태 | 진행 방법 |
-|---|---|
-| 일반 계정이고 sudo 가능 | 문서 명령어 그대로 실행 |
-| root 계정 | `sudo`를 빼고 실행 |
-| 일반 계정이고 sudo 불가 | root 접근 가능한 VM/컨테이너를 새로 준비 |
+숫자와 경로를 정해 두는 이유는 단순하다.  
+서버 운영에서는 “어디에 무엇이 있는지”가 약속되어 있어야 한다.  
+약속된 경로가 있어야 스크립트가 단순해지고, 로그를 찾기 쉬워지고, 장애가 났을 때 같은 위치에서 같은 방식으로 확인할 수 있다.
 
 ---
 
-## 2장. 제출 체크리스트
+## 2장. 운영자가 먼저 정하는 것
 
-아래 항목을 수행 내역서에 증거와 함께 기록한다.
+서버를 운영한다는 것은 기준을 정하는 일이다.  
+기준이 없으면 명령어는 늘 즉흥적으로 실행되고, 나중에 왜 그렇게 했는지 설명하기 어려워진다.
 
-- SSH 포트 `20022` 변경 확인
-- Root 원격 접속 차단 확인
-- 방화벽 활성화 확인
-- TCP `20022`, TCP `15034`만 허용 확인
-- `agent-admin`, `agent-dev`, `agent-test` 계정 생성 확인
-- `agent-common`, `agent-core` 그룹 생성 확인
-- `$AGENT_HOME`, `upload_files`, `api_keys`, `/var/log/agent-app` 권한 확인
-- 앱 Boot Sequence 5단계 `[OK]` 및 `Agent READY` 확인
-- 앱이 `0.0.0.0:15034`에서 LISTEN 중임을 확인
-- `monitor.sh` 실행 결과 확인
-- `/var/log/agent-app/monitor.log` 누적 확인
-- `agent-admin` crontab 매분 실행 등록 확인
-- 1분 뒤 로그 라인 증가 확인
+이번 미션에서 먼저 정해야 할 기준은 네 가지다.
+
+### 접속 기준
+
+서버에는 관리자가 들어오는 통로가 필요하다.  
+Linux 서버에서 가장 흔한 원격 접속 통로는 SSH다.
+
+기본 SSH 포트는 `22`다.  
+하지만 이번 미션에서는 `20022`를 사용한다.
+
+포트를 바꾼다고 보안이 완성되는 것은 아니다.  
+다만 자동으로 기본 포트만 훑는 단순한 공격이나 불필요한 접속 시도를 줄이는 데 도움이 된다.
+
+또 하나 중요한 기준은 root 직접 접속을 막는 것이다.  
+root는 시스템에서 가장 강한 권한을 가진 계정이다. 이 계정이 바로 외부 접속 대상이 되면 위험이 커진다.
+
+그래서 SSH 장에서는 두 가지를 설정한다.
+
+```text
+Port 20022
+PermitRootLogin no
+```
+
+### 네트워크 기준
+
+서버는 필요한 포트만 열어 두는 것이 좋다.  
+열려 있는 포트는 외부와 대화할 수 있는 입구다. 입구가 많을수록 관리해야 할 표면도 넓어진다.
+
+이번 미션에서 외부에 열어 둘 포트는 두 개다.
+
+```text
+20022/tcp  SSH 접속
+15034/tcp  agent-app 서비스
+```
+
+방화벽 장에서는 이 두 포트만 허용하고 나머지 인바운드 연결은 막는 흐름을 연습한다.
+
+### 권한 기준
+
+모든 사용자가 모든 파일을 볼 수 있으면 운영 환경은 금방 위험해진다.  
+그래서 계정을 역할별로 나누고, 역할에 따라 접근할 수 있는 디렉토리를 다르게 만든다.
+
+이번 미션에서는 세 계정을 사용한다.
+
+```text
+agent-admin  운영 관리자
+agent-dev    개발 및 운영 보조
+agent-test   테스트 담당자
+```
+
+그리고 두 그룹을 사용한다.
+
+```text
+agent-common  공통 작업 영역 접근
+agent-core    민감한 운영 영역 접근
+```
+
+핵심은 `agent-test`가 공유 업로드 디렉토리는 사용할 수 있지만, API 키와 운영 로그에는 접근하지 못하게 하는 것이다.
+
+### 기록 기준
+
+마지막 기준은 로그다.  
+운영자는 서버 상태를 기억에 의존하지 않는다. 기록으로 남긴다.
+
+이번 미션에서 `monitor.sh`는 다음 상태를 기록한다.
+
+- 앱 프로세스가 살아 있는가
+- 앱 포트가 열려 있는가
+- 방화벽이 활성화되어 있는가
+- CPU, 메모리, 디스크 사용률이 어느 정도인가
+
+나중에 `cron`을 사용하면 이 점검을 매분 자동으로 실행할 수 있다.
+
+이제 기준을 정했으니, 다음 장부터는 하나씩 실제 Linux 설정으로 옮긴다.
 
 ---
 
 ## 3장. SSH 기본 보안 설정
 
-### 3.1 SSH 설정 파일 백업
+SSH는 서버에 원격으로 접속하기 위한 통로다.  
+운영자는 이 통로가 열려 있는지, 어느 포트로 열려 있는지, root가 직접 들어올 수 있는지를 확인해야 한다.
+
+그런데 OrbStack의 Linux 머신에서는 처음부터 SSH 서버가 설치되어 있지 않을 수 있다.  
+이때 다음 명령을 실행하면 오류가 난다.
 
 ```bash
 sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
 ```
 
-### 3.2 SSH 포트와 Root 로그인 설정
+오류 메시지는 보통 이렇게 생겼다.
+
+```text
+cp: cannot stat '/etc/ssh/sshd_config': No such file or directory
+```
+
+이 말은 `cp` 명령이 실패했다는 뜻이지만, 더 정확히는 “백업할 원본 파일이 아직 없다”는 뜻이다.  
+`/etc/ssh/sshd_config`는 SSH 클라이언트 설정 파일이 아니라 SSH 서버 데몬, 즉 `sshd`의 설정 파일이다. SSH 서버가 설치되어 있지 않으면 이 파일도 없을 수 있다.
+
+### 3.1 SSH 서버가 있는지 확인하기
+
+먼저 `/etc/ssh` 디렉토리에 무엇이 있는지 본다.
+
+```bash
+ls -l /etc/ssh
+```
+
+`/etc`는 시스템 설정 파일들이 모이는 디렉토리다.  
+그 안의 `/etc/ssh`는 SSH와 관련된 설정이 놓이는 자리다.
+
+```text
+ls      목록을 본다
+-l      자세히 본다
+/etc/ssh 확인할 대상 경로
+```
+
+그다음 `sshd` 명령이 존재하는지 확인한다.
+
+```bash
+command -v sshd
+```
+
+`sshd`는 SSH server daemon의 줄임말이다.  
+여기서 daemon은 백그라운드에서 계속 실행되며 요청을 기다리는 프로그램을 뜻한다.
+
+아무것도 출력되지 않으면 SSH 서버가 아직 준비되지 않은 상태다.
+
+### 3.2 SSH 서버 설치하기
+
+Ubuntu 계열 OrbStack 머신이라면 다음 패키지를 설치한다.
+
+```bash
+sudo apt update
+sudo apt install -y openssh-server
+```
+
+`apt`는 Ubuntu 계열 Linux에서 패키지를 설치하고 관리하는 도구다.  
+`openssh-server`는 SSH 접속을 받아 주는 서버 프로그램이다.
+
+| 명령어 | 의미 |
+|---|---|
+| `sudo apt update` | 설치 가능한 패키지 목록을 최신 상태로 갱신한다 |
+| `sudo apt install -y openssh-server` | SSH 서버 패키지를 설치한다 |
+| `-y` | 설치 중 물어보는 질문에 자동으로 yes라고 답한다 |
+
+설치 후 다시 확인한다.
+
+```bash
+ls -l /etc/ssh/sshd_config
+command -v sshd
+```
+
+이제 `/etc/ssh/sshd_config` 파일이 보이면 다음 단계로 넘어갈 수 있다.
+
+### 3.3 SSH 설정 파일 백업
+
+운영 설정 파일을 수정하기 전에는 원본을 남겨 둔다.  
+백업은 “되돌아갈 자리”를 만드는 일이다.
+
+```bash
+sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+```
+
+`cp`는 copy의 줄임말이다.  
+이 명령은 원본 설정 파일을 같은 위치에 `.bak`이라는 이름으로 하나 더 만들어 둔다.
+
+```text
+sudo      시스템 설정 파일을 읽고 쓸 수 있도록 관리자 권한으로 실행
+cp        파일 복사
+원본      /etc/ssh/sshd_config
+복사본    /etc/ssh/sshd_config.bak
+```
+
+백업이 만들어졌는지 확인한다.
+
+```bash
+ls -l /etc/ssh/sshd_config*
+```
+
+마지막의 `*`는 와일드카드다.  
+`sshd_config`로 시작하는 파일을 함께 보여 달라는 뜻이다.
+
+### 3.4 SSH 포트와 Root 로그인 설정
 
 `/etc/ssh/sshd_config` 파일을 연다.
 
 ```bash
 sudo vi /etc/ssh/sshd_config
 ```
+
+`vi`는 터미널에서 사용하는 텍스트 편집기다.  
+`sudo`를 붙이는 이유는 `/etc/ssh/sshd_config`가 일반 사용자의 개인 파일이 아니라 시스템 설정 파일이기 때문이다.
 
 다음 설정을 추가하거나 수정한다.
 
@@ -214,34 +451,63 @@ Port 20022
 PermitRootLogin no
 ```
 
-### 3.3 SSH 설정 문법 검사
+`Port 20022`는 SSH가 기본 포트 `22` 대신 `20022`에서 접속을 받게 한다.  
+`PermitRootLogin no`는 root 계정이 SSH로 직접 로그인하지 못하게 한다.
+
+### 3.5 SSH 설정 문법 검사
+
+설정 파일을 저장했다면 바로 재시작하지 않고 문법부터 검사한다.
 
 ```bash
 sudo sshd -t
 ```
 
+`-t`는 test mode다.  
+SSH 서버를 실제로 재시작하지 않고 설정 파일의 문법만 검사한다.
+
 아무 출력이 없으면 설정 문법이 정상이다.
 
-### 3.4 SSH 서비스 재시작
+### 3.6 SSH 서비스 재시작
 
-Ubuntu 22.04에서는 보통 다음 명령을 사용한다.
+일반 Ubuntu 서버에서는 보통 다음 명령을 사용한다.
 
 ```bash
 sudo systemctl restart ssh
 ```
 
-환경에 따라 서비스명이 `sshd`일 수도 있다.
+`systemctl`은 systemd가 관리하는 서비스를 제어하는 명령이다.  
+`restart ssh`는 SSH 서비스를 다시 시작하라는 뜻이다.
 
-```bash
-sudo systemctl restart sshd
-```
+다만 OrbStack 환경에서는 `systemctl`이 기대한 방식으로 동작하지 않을 수 있다.  
+그 경우 이 장에서는 설정 파일을 만들고 문법을 확인하는 것까지를 학습 목표로 삼고, 실제 서비스 재시작과 외부 접속 검증은 환경 차이로 기록한다.
 
-### 3.5 확인 명령
+### 3.7 확인 명령
 
 ```bash
 sudo sshd -T | grep -E '^(port|permitrootlogin)'
 ss -tulnp | grep ':20022'
 ```
+
+첫 번째 줄은 SSH 서버가 최종적으로 어떤 설정을 읽고 있는지 확인한다.
+
+| 부분 | 의미 |
+|---|---|
+| `sshd -T` | SSH 서버의 최종 설정값을 출력한다 |
+| `|` | 앞 명령의 출력을 뒤 명령의 입력으로 넘긴다 |
+| `grep -E` | 확장 정규식으로 원하는 줄만 고른다 |
+| `^(port\|permitrootlogin)` | `port` 또는 `permitrootlogin`으로 시작하는 줄을 찾는다 |
+
+두 번째 줄은 실제로 포트가 열려 있는지 확인한다.
+
+| 부분 | 의미 |
+|---|---|
+| `ss` | 소켓과 네트워크 연결 상태를 보여준다 |
+| `-t` | TCP 연결을 본다 |
+| `-u` | UDP 연결을 본다 |
+| `-l` | LISTEN 상태, 즉 대기 중인 포트를 본다 |
+| `-n` | 포트와 주소를 숫자로 보여준다 |
+| `-p` | 어떤 프로세스가 사용하는지 보여준다 |
+| `grep ':20022'` | 결과 중 `20022` 포트가 포함된 줄만 고른다 |
 
 기대 결과:
 
@@ -250,12 +516,18 @@ port 20022
 permitrootlogin no
 ```
 
+만약 `ss -tulnp | grep ':20022'`에서 아무것도 나오지 않는다면, 설정은 존재하지만 SSH 서버 프로세스가 실제로 실행 중이 아닐 수 있다.  
+OrbStack에서는 이 차이를 구분해서 기록하는 것이 더 중요하다.
+
 ---
 
 ## 4장. 방화벽 설정
 
 이 문서는 Ubuntu 기본 환경을 기준으로 UFW를 사용한다.  
 방화벽 정책은 “필요한 포트만 허용”하는 것이 핵심이다.
+
+방화벽은 서버 앞에 세우는 문지기와 비슷하다.  
+앱이 실행 중이어도 방화벽이 막고 있으면 외부에서 접근할 수 없고, 앱이 필요하지 않은 포트가 열려 있으면 불필요한 위험이 늘어난다.
 
 ### 4.1 UFW 설치 확인
 
@@ -264,12 +536,25 @@ sudo apt update
 sudo apt install -y ufw
 ```
 
+`ufw`는 uncomplicated firewall의 줄임말이다.  
+복잡한 방화벽 규칙을 비교적 간단한 명령으로 다룰 수 있게 해 주는 Ubuntu 계열 도구다.
+
 ### 4.2 기본 정책 설정
 
 ```bash
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
 ```
+
+기본 정책은 “규칙에 없으면 어떻게 할 것인가”를 정한다.
+
+| 명령어 | 의미 |
+|---|---|
+| `default deny incoming` | 들어오는 연결은 기본적으로 거부한다 |
+| `default allow outgoing` | 서버에서 밖으로 나가는 연결은 기본적으로 허용한다 |
+
+운영 서버에서는 보통 외부에서 들어오는 입구를 최소화한다.  
+그래서 먼저 모두 막고, 필요한 포트만 하나씩 열어 주는 방식으로 접근한다.
 
 ### 4.3 필요한 포트만 허용
 
@@ -278,17 +563,30 @@ sudo ufw allow 20022/tcp
 sudo ufw allow 15034/tcp
 ```
 
+`allow`는 해당 포트로 들어오는 연결을 허용한다는 뜻이다.  
+`/tcp`는 TCP 프로토콜을 의미한다.
+
+```text
+20022/tcp  SSH 접속용
+15034/tcp  agent-app 서비스용
+```
+
 ### 4.4 UFW 활성화
 
 ```bash
 sudo ufw enable
 ```
 
+설정한 방화벽 규칙은 `enable`을 해야 실제로 활성화된다.  
+OrbStack에서는 네트워크 구조상 UFW 동작이 일반 VM과 다르게 보일 수 있지만, 방화벽 정책을 어떻게 선언하는지는 같은 방식으로 익힐 수 있다.
+
 ### 4.5 확인 명령
 
 ```bash
 sudo ufw status verbose
 ```
+
+`status`는 현재 방화벽 상태를 보여 주고, `verbose`는 기본 정책까지 자세히 보여 준다.
 
 기대 결과에는 다음 항목이 포함되어야 한다.
 
@@ -326,12 +624,18 @@ sudo groupadd agent-common
 sudo groupadd agent-core
 ```
 
+`groupadd`는 새 그룹을 만든다.  
+그룹은 여러 사용자를 하나의 권한 단위로 묶기 위한 이름표다.
+
 이미 존재한다면 오류가 날 수 있다. 이 경우 `getent group`으로 확인한다.
 
 ```bash
 getent group agent-common
 getent group agent-core
 ```
+
+`getent`는 시스템 데이터베이스에서 정보를 조회하는 명령이다.  
+여기서는 `group` 데이터베이스에서 해당 그룹이 존재하는지 확인한다.
 
 ### 5.3 계정 생성
 
@@ -341,6 +645,13 @@ sudo useradd -m -s /bin/bash agent-dev
 sudo useradd -m -s /bin/bash agent-test
 ```
 
+`useradd`는 새 사용자를 만든다.
+
+| 옵션 | 의미 |
+|---|---|
+| `-m` | 사용자의 홈 디렉토리를 함께 만든다 |
+| `-s /bin/bash` | 로그인 셸을 Bash로 지정한다 |
+
 필요하면 비밀번호를 설정한다.
 
 ```bash
@@ -348,6 +659,9 @@ sudo passwd agent-admin
 sudo passwd agent-dev
 sudo passwd agent-test
 ```
+
+`passwd`는 사용자 비밀번호를 설정하거나 변경한다.  
+이번 실습에서 계정 전환만 필요하다면 환경에 따라 비밀번호 설정 없이 `sudo -u` 또는 `sudo -iu`로 진행할 수도 있다.
 
 ### 5.4 그룹에 계정 추가
 
@@ -357,6 +671,16 @@ sudo usermod -aG agent-common,agent-core agent-dev
 sudo usermod -aG agent-common agent-test
 ```
 
+`usermod`는 기존 사용자 정보를 수정한다.
+
+| 옵션 | 의미 |
+|---|---|
+| `-G` | 사용자가 속할 보조 그룹 목록을 지정한다 |
+| `-a` | 기존 그룹을 유지한 채 새 그룹을 추가한다 |
+
+`-a` 없이 `-G`만 사용하면 기존 보조 그룹이 덮어써질 수 있다.  
+그래서 그룹을 추가할 때는 보통 `-aG`를 함께 쓴다.
+
 ### 5.5 확인 명령
 
 ```bash
@@ -364,6 +688,9 @@ id agent-admin
 id agent-dev
 id agent-test
 ```
+
+`id 사용자명`은 해당 사용자의 UID, 기본 그룹, 보조 그룹을 보여 준다.  
+계정과 그룹을 만든 뒤에는 반드시 `id`로 실제 반영 여부를 확인한다.
 
 기대 관계:
 
@@ -383,7 +710,36 @@ id agent-test
 export AGENT_HOME=/home/agent-admin/agent-app
 ```
 
-### 6.2 디렉토리 생성
+`export`는 현재 셸과 그 셸에서 실행되는 프로그램들이 변수를 사용할 수 있게 내보내는 명령이다.  
+`AGENT_HOME`은 앱과 스크립트가 기준으로 삼을 홈 디렉토리다.
+
+### 6.2 ACL 도구 준비
+
+이 장에서는 기본 권한인 `chmod`만 쓰지 않고 ACL도 함께 사용한다.  
+ACL은 파일과 디렉토리에 더 세밀한 권한 규칙을 붙일 수 있게 해 주는 기능이다.
+
+먼저 `setfacl`과 `getfacl` 명령이 있는지 확인한다.
+
+```bash
+command -v setfacl
+command -v getfacl
+```
+
+아무것도 출력되지 않거나 명령을 찾을 수 없다고 나오면 `acl` 패키지를 설치한다.
+
+```bash
+sudo apt update
+sudo apt install -y acl
+```
+
+설치 후 다시 확인한다.
+
+```bash
+command -v setfacl
+command -v getfacl
+```
+
+### 6.3 디렉토리 생성
 
 ```bash
 sudo mkdir -p /home/agent-admin/agent-app/upload_files
@@ -392,7 +748,20 @@ sudo mkdir -p /home/agent-admin/agent-app/bin
 sudo mkdir -p /var/log/agent-app
 ```
 
-### 6.3 소유자와 그룹 설정
+`mkdir`은 디렉토리를 만든다.  
+`-p`는 부모 디렉토리가 없으면 함께 만들고, 이미 존재해도 오류로 멈추지 않게 한다.
+
+각 디렉토리의 역할은 다음과 같다.
+
+| 경로 | 역할 |
+|---|---|
+| `/home/agent-admin/agent-app` | 앱의 기준 디렉토리 |
+| `upload_files` | 공통 업로드 파일 영역 |
+| `api_keys` | API 키처럼 민감한 파일을 두는 영역 |
+| `bin` | 실행 스크립트를 두는 영역 |
+| `/var/log/agent-app` | 앱과 모니터링 로그를 남기는 영역 |
+
+### 6.4 소유자와 그룹 설정
 
 ```bash
 sudo chown -R agent-admin:agent-common /home/agent-admin/agent-app
@@ -401,7 +770,16 @@ sudo chown agent-admin:agent-core /home/agent-admin/agent-app/api_keys
 sudo chown agent-admin:agent-core /var/log/agent-app
 ```
 
-### 6.4 기본 권한 설정
+`chown`은 파일이나 디렉토리의 소유자와 소유 그룹을 바꾼다.
+
+```text
+chown 사용자:그룹 경로
+```
+
+`-R`은 recursive의 의미로, 지정한 디렉토리 아래까지 재귀적으로 적용한다.  
+민감한 영역인 `api_keys`와 로그 디렉토리는 `agent-core` 그룹에 묶어 `agent-test`가 접근하지 못하게 한다.
+
+### 6.5 기본 권한 설정
 
 ```bash
 sudo chmod 750 /home/agent-admin/agent-app
@@ -410,7 +788,19 @@ sudo chmod 770 /home/agent-admin/agent-app/api_keys
 sudo chmod 770 /var/log/agent-app
 ```
 
-### 6.5 ACL을 이용한 기본 권한 유지
+`chmod`는 권한 숫자를 바꾼다.  
+숫자는 소유자, 그룹, 기타 사용자 순서로 읽는다.
+
+| 숫자 | 권한 |
+|---|---|
+| `7` | 읽기, 쓰기, 실행 모두 가능 |
+| `5` | 읽기와 실행 가능, 쓰기는 불가 |
+| `0` | 접근 불가 |
+
+따라서 `750`은 소유자는 모두 가능, 그룹은 읽기와 실행 가능, 기타 사용자는 접근 불가라는 뜻이다.  
+`770`은 소유자와 그룹은 모두 가능, 기타 사용자는 접근 불가라는 뜻이다.
+
+### 6.6 ACL을 이용한 기본 권한 유지
 
 새로 생성되는 파일에도 그룹 권한이 유지되도록 기본 ACL을 설정한다.
 
@@ -425,18 +815,38 @@ sudo setfacl -m g:agent-core:rwx /var/log/agent-app
 sudo setfacl -d -m g:agent-core:rwx /var/log/agent-app
 ```
 
-### 6.6 확인 명령
+`setfacl`은 ACL 규칙을 설정한다.
+
+| 부분 | 의미 |
+|---|---|
+| `-m` | ACL 규칙을 추가하거나 수정한다 |
+| `-d` | 새로 만들어지는 파일과 디렉토리에 적용될 기본 ACL을 설정한다 |
+| `g:agent-common:rwx` | `agent-common` 그룹에 읽기, 쓰기, 실행 권한을 준다 |
+| `g:agent-core:rwx` | `agent-core` 그룹에 읽기, 쓰기, 실행 권한을 준다 |
+
+일반 `chmod`만 사용하면 새 파일을 만들 때 권한이 기대와 다르게 생길 수 있다.  
+기본 ACL을 설정하면 디렉토리 안에 새 파일이 만들어져도 그룹 접근 정책을 유지하기 쉽다.
+
+### 6.7 확인 명령
+
+현재 사용자가 `agent-admin` 또는 관련 그룹에 속하지 않았다면 `/home/agent-admin/agent-app` 아래를 바로 볼 수 없을 수 있다.  
+이것은 설정이 잘못된 것이 아니라, 앞에서 `chmod 750`으로 접근을 제한했기 때문에 생기는 자연스러운 결과다.
+
+운영자가 권한 설정을 확인할 때는 `sudo`로 확인한다.
 
 ```bash
-ls -ld /home/agent-admin/agent-app
-ls -ld /home/agent-admin/agent-app/upload_files
-ls -ld /home/agent-admin/agent-app/api_keys
-ls -ld /var/log/agent-app
+sudo ls -ld /home/agent-admin/agent-app
+sudo ls -ld /home/agent-admin/agent-app/upload_files
+sudo ls -ld /home/agent-admin/agent-app/api_keys
+sudo ls -ld /var/log/agent-app
 
-getfacl /home/agent-admin/agent-app/upload_files
-getfacl /home/agent-admin/agent-app/api_keys
-getfacl /var/log/agent-app
+sudo getfacl /home/agent-admin/agent-app/upload_files
+sudo getfacl /home/agent-admin/agent-app/api_keys
+sudo getfacl /var/log/agent-app
 ```
+
+`getfacl`은 현재 적용된 ACL 규칙을 읽어 온다.  
+`ls -l`이 기본 권한을 빠르게 보여 준다면, `getfacl`은 더 세밀한 권한 규칙까지 보여 준다.
 
 ---
 
@@ -444,7 +854,16 @@ getfacl /var/log/agent-app
 
 ### 7.1 환경 변수 설정
 
-`agent-admin` 계정의 `~/.bashrc` 또는 앱 실행 스크립트에 다음 값을 설정한다.
+앱은 실행될 때 몇 가지 환경 변수를 검사한다.  
+이 값들이 없으면 앱은 자신이 어느 디렉토리를 기준으로 실행되어야 하는지, 어느 포트를 사용해야 하는지, 키 파일과 로그 디렉토리가 어디 있는지 알 수 없다.
+
+먼저 `agent-admin` 계정으로 들어간다.
+
+```bash
+sudo -iu agent-admin
+```
+
+그 다음 현재 셸에 다음 값을 설정한다.
 
 ```bash
 export AGENT_HOME=/home/agent-admin/agent-app
@@ -454,10 +873,55 @@ export AGENT_KEY_PATH=$AGENT_HOME/api_keys/t_secret.key
 export AGENT_LOG_DIR=/var/log/agent-app
 ```
 
-현재 쉘에 즉시 적용하려면 다음을 실행한다.
+환경 변수는 앱이 실행될 때 필요한 약속을 셸에 알려 주는 방법이다.
+
+| 변수 | 의미 |
+|---|---|
+| `AGENT_HOME` | 앱이 설치된 기준 디렉토리 |
+| `AGENT_PORT` | 앱이 사용할 포트 |
+| `AGENT_UPLOAD_DIR` | 업로드 파일을 저장할 위치 |
+| `AGENT_KEY_PATH` | API 키 파일 경로 |
+| `AGENT_LOG_DIR` | 로그를 남길 디렉토리 |
+
+`$AGENT_HOME`처럼 앞에 `$`를 붙이면 이미 정의된 변수 값을 가져와서 사용할 수 있다.
+
+설정이 제대로 들어갔는지 확인한다.
+
+```bash
+env | grep '^AGENT_'
+```
+
+`env`는 현재 셸에 설정된 환경 변수를 보여 준다.  
+`grep '^AGENT_'`는 그중 `AGENT_`로 시작하는 값만 골라서 보여 준다.
+
+환경 변수는 현재 셸에만 살아 있다.  
+`exit`로 나갔다가 다시 `sudo -iu agent-admin`으로 들어오면 방금 입력한 값이 사라질 수 있다.
+
+매번 입력하지 않으려면 `agent-admin`의 `~/.bashrc`에 저장한다.
+
+```bash
+cat <<'EOF' >> ~/.bashrc
+export AGENT_HOME=/home/agent-admin/agent-app
+export AGENT_PORT=15034
+export AGENT_UPLOAD_DIR=$AGENT_HOME/upload_files
+export AGENT_KEY_PATH=$AGENT_HOME/api_keys/t_secret.key
+export AGENT_LOG_DIR=/var/log/agent-app
+EOF
+```
+
+저장한 내용을 현재 셸에 즉시 적용하려면 다음을 실행한다.
 
 ```bash
 source ~/.bashrc
+```
+
+`source`는 파일 안의 셸 명령을 현재 셸에 바로 적용한다.  
+`~/.bashrc`에 환경 변수를 추가했다면, 새 터미널을 열지 않고도 현재 터미널에 반영할 수 있다.
+
+확인까지 다시 한다.
+
+```bash
+env | grep '^AGENT_'
 ```
 
 ### 7.2 키 파일 생성
@@ -468,13 +932,37 @@ sudo chown agent-admin:agent-core /home/agent-admin/agent-app/api_keys/t_secret.
 sudo chmod 660 /home/agent-admin/agent-app/api_keys/t_secret.key
 ```
 
+첫 번째 줄은 `agent-admin` 사용자 권한으로 키 파일을 만든다.
+
+| 부분 | 의미 |
+|---|---|
+| `sudo -u agent-admin` | 명령을 `agent-admin` 사용자로 실행한다 |
+| `bash -c '...'` | 따옴표 안의 명령을 Bash로 실행한다 |
+| `echo agent_api_key_test` | 문자열을 출력한다 |
+| `>` | 출력 내용을 파일에 저장한다. 기존 파일이 있으면 덮어쓴다 |
+
+그 뒤 `chown`으로 소유자와 그룹을 맞추고, `chmod 660`으로 소유자와 그룹만 읽고 쓸 수 있게 한다.  
+API 키는 민감한 파일이므로 기타 사용자에게 권한을 주지 않는다.
+
 ### 7.3 제공 앱 배치
 
 현재 제공 파일은 `agent-app.zip`이며, 압축을 풀면 Linux 실행 파일 `agent-app`이 나온다.
+1장에서 준비한 `unzip` 명령을 여기서 실제로 사용한다.
+
+먼저 지금 디렉토리에 `agent-app.zip`이 있는지 확인한다.
+
+```bash
+ls -l agent-app.zip
+```
+
+파일이 없다면 1장의 “제공 파일 살펴보기”로 돌아가서 Mac 프로젝트 폴더의 `agent-app.zip`을 Linux 작업 디렉토리로 복사한다.
 
 ```bash
 unzip agent-app.zip
 ```
+
+여기서는 `-l` 없이 `unzip`을 실행하므로 실제로 압축을 푼다.  
+압축이 풀리면 현재 디렉토리에 `agent-app` 실행 파일이 생긴다.
 
 실습 서버의 현재 작업 디렉토리에서 앱을 `$AGENT_HOME`으로 복사한다.
 
@@ -484,12 +972,40 @@ sudo chown agent-admin:agent-core /home/agent-admin/agent-app/agent-app
 sudo chmod 750 /home/agent-admin/agent-app/agent-app
 ```
 
+복사 후에는 파일의 소유자, 그룹, 실행 권한을 운영 기준에 맞춘다.
+
+| 명령 | 이유 |
+|---|---|
+| `sudo cp agent-app ...` | 앱 실행 파일을 앱 홈 디렉토리로 배치한다 |
+| `sudo chown agent-admin:agent-core ...` | 앱 파일을 운영 계정과 핵심 그룹이 관리하게 한다 |
+| `sudo chmod 750 ...` | 소유자는 실행 가능, 그룹은 읽기와 실행 가능, 기타 사용자는 접근 불가로 만든다 |
+
+확인 단계에서는 `file` 명령도 사용한다.  
+이 명령이 없다면 먼저 설치한다.
+
+```bash
+command -v file
+```
+
+아무것도 출력되지 않으면 다음처럼 설치한다.
+
+```bash
+sudo apt update
+sudo apt install -y file
+```
+
 확인:
 
 ```bash
-ls -l /home/agent-admin/agent-app/agent-app
-file /home/agent-admin/agent-app/agent-app
+sudo ls -l /home/agent-admin/agent-app/agent-app
+sudo file /home/agent-admin/agent-app/agent-app
 ```
+
+`file` 명령은 파일의 종류를 판별한다.  
+여기서는 `agent-app`이 Linux 실행 파일인지 확인하는 데 사용한다.
+
+만약 `ls: cannot access '/home/agent-admin/agent-app/agent-app': Permission denied`가 나온다면 파일이 없는 것이 아니라 현재 사용자에게 경로 접근 권한이 없다는 뜻일 수 있다.  
+이때는 위처럼 `sudo`를 붙여 확인한다.
 
 ### 7.4 앱 실행
 
@@ -502,8 +1018,44 @@ export AGENT_PORT=15034
 export AGENT_UPLOAD_DIR=$AGENT_HOME/upload_files
 export AGENT_KEY_PATH=$AGENT_HOME/api_keys/t_secret.key
 export AGENT_LOG_DIR=/var/log/agent-app
+env | grep '^AGENT_'
 $AGENT_HOME/agent-app
 ```
+
+`sudo -iu agent-admin`은 `agent-admin` 사용자로 로그인한 것처럼 셸을 연다.  
+`-i`는 login shell을 의미하고, `-u agent-admin`은 전환할 사용자를 지정한다.
+
+앱을 root가 아니라 `agent-admin`으로 실행하는 이유는 운영 권한을 제한하기 위해서다.  
+앱이 필요 이상의 권한을 가지면, 앱에 문제가 생겼을 때 시스템 전체에 영향을 줄 가능성이 커진다.
+
+여기서 `agent-app`이라는 이름이 두 번 등장해서 헷갈릴 수 있다.
+
+```text
+/home/agent-admin/agent-app        디렉토리
+/home/agent-admin/agent-app/agent-app  실행 파일
+```
+
+따라서 `file agent-app`을 실행하면 현재 위치에 따라 디렉토리라고 나올 수 있다.  
+실행 파일을 확인하려면 전체 경로 또는 디렉토리 안의 파일명을 정확히 지정한다.
+
+```bash
+file /home/agent-admin/agent-app/agent-app
+```
+
+앱 실행 중 다음 오류가 나오면 환경 변수가 현재 셸에 없는 것이다.
+
+```text
+[2/5] Verifying Environment Variables     [FAIL]
+>>> Critical Env 'AGENT_HOME' is missing.
+```
+
+이때는 앱 문제가 아니라 실행 전에 환경 변수를 다시 설정해야 한다는 뜻이다.
+
+```bash
+env | grep '^AGENT_'
+```
+
+아무것도 출력되지 않으면 7.1의 `export` 명령을 다시 실행하거나, `~/.bashrc`에 저장한 뒤 `source ~/.bashrc`를 실행한다.
 
 성공 기준:
 
@@ -524,17 +1076,149 @@ Agent READY
 ss -tulnp | grep ':15034'
 ```
 
+이 명령은 앱이 실제로 `15034` 포트에서 연결을 기다리고 있는지 확인한다.  
+앱 실행 메시지만 보고 끝내지 않고, 운영체제 수준에서 포트가 열렸는지 확인하는 과정이다.
+
 기대 결과:
 
 ```text
 LISTEN ... 0.0.0.0:15034 ...
 ```
 
+### 7.6 앱 종료
+
+앱을 터미널에서 직접 실행하면 그 터미널은 앱 프로세스가 차지한다.  
+이 상태를 전면 실행이라고 생각하면 된다.
+
+가장 단순한 종료 방법은 앱이 실행 중인 터미널에서 `Ctrl+C`를 누르는 것이다.
+
+```text
+Ctrl+C
+```
+
+`Ctrl+C`는 현재 터미널에서 실행 중인 프로세스에 인터럽트 신호를 보낸다.  
+대부분의 전면 실행 프로그램은 이 신호를 받으면 종료된다.
+
+다른 터미널에서 종료해야 한다면 먼저 프로세스를 찾는다.
+
+```bash
+pgrep -af 'agent-app'
+```
+
+`pgrep`은 실행 중인 프로세스를 찾는 명령이다.  
+`-a`는 PID와 함께 실행 명령 전체를 보여 주고, `-f`는 프로세스 이름뿐 아니라 전체 명령줄에서 패턴을 찾게 한다.
+
+출력 예시는 다음과 비슷하다.
+
+```text
+48291 /home/agent-admin/agent-app/agent-app
+```
+
+왼쪽 숫자가 PID다.  
+PID를 확인했다면 종료 신호를 보낸다.
+
+```bash
+kill 48291
+```
+
+`kill`은 이름과 달리 항상 강제 종료만 뜻하지 않는다.  
+기본적으로는 프로그램에 정상 종료를 요청하는 `TERM` 신호를 보낸다.
+
+종료되었는지 다시 확인한다.
+
+```bash
+pgrep -af 'agent-app'
+ss -tulnp | grep ':15034'
+```
+
+아무것도 출력되지 않으면 앱 프로세스와 포트 대기가 사라진 것이다.
+
+만약 정상 종료가 되지 않을 때만 마지막 수단으로 강제 종료를 사용한다.
+
+```bash
+kill -9 48291
+```
+
+`-9`는 `KILL` 신호다.  
+프로그램이 정리 작업을 할 기회를 거의 주지 않기 때문에 평소에는 먼저 `kill PID`로 종료를 시도한다.
+
 ---
 
 ## 8장. monitor.sh 설계
 
-### 8.1 스크립트 요구사항 정리
+7장까지 진행하면 앱은 실행되고, `15034` 포트도 열려 있어야 한다.  
+이제 할 일은 그 상태를 사람이 매번 눈으로 확인하지 않아도 되게 만드는 것이다.
+
+하지만 바로 스크립트를 작성하면 왜 그런 코드가 필요한지 알기 어렵다.  
+그래서 먼저 운영자가 손으로 어떤 점검을 하는지 확인하고, 그 명령들을 하나씩 스크립트로 옮긴다.
+
+### 8.1 먼저 손으로 점검해 보기
+
+앱이 실행 중인지 확인한다.
+
+```bash
+pgrep -af 'agent-app'
+```
+
+`pgrep`은 실행 중인 프로세스를 찾는다.  
+`-a`는 PID와 실행 명령을 함께 보여 주고, `-f`는 프로세스 이름뿐 아니라 전체 명령줄에서 `agent-app`을 찾는다.
+
+앱 포트가 열려 있는지 확인한다.
+
+```bash
+ss -tulnp | grep ':15034'
+```
+
+이 명령은 `15034` 포트가 LISTEN 상태인지 확인한다.  
+프로세스가 살아 있어도 포트를 열지 못했다면 서비스는 정상이라고 보기 어렵다.
+
+방화벽 상태를 확인한다.
+
+```bash
+sudo ufw status verbose
+```
+
+OrbStack에서는 UFW가 일반 VM처럼 완전히 동작하지 않을 수 있다.  
+그래도 운영 관점에서는 “방화벽이 켜져 있는가, 필요한 포트만 열려 있는가”를 확인하는 습관이 중요하다.
+
+CPU, 메모리, 디스크 상태도 확인한다.
+
+```bash
+top -bn1
+free
+df /
+```
+
+각 명령의 역할은 다음과 같다.
+
+| 명령어 | 확인하는 것 |
+|---|---|
+| `top -bn1` | CPU 사용 상태를 한 번 출력한다 |
+| `free` | 메모리 사용량을 보여 준다 |
+| `df /` | 루트 파일시스템의 디스크 사용량을 보여 준다 |
+
+마지막으로 로그에 남길 현재 시간을 확인한다.
+
+```bash
+date '+%Y-%m-%d %H:%M:%S'
+```
+
+`date`는 현재 시간을 출력한다.  
+로그에는 “언제 이 상태였는가”가 반드시 들어가야 한다.
+
+정리하면 운영자가 손으로 하는 점검은 다음 질문으로 압축된다.
+
+- 앱 프로세스가 살아 있는가
+- 앱 포트가 열려 있는가
+- 방화벽은 활성화되어 있는가
+- CPU, 메모리, 디스크 상태는 어떤가
+- 이 결과를 언제 확인했는가
+
+`monitor.sh`는 이 질문들을 Bash로 자동화한 파일이다.
+
+### 8.2 요구사항을 스크립트 문장으로 바꾸기
+
+이제 손으로 확인한 내용을 스크립트의 요구사항으로 바꾼다.
 
 `monitor.sh`는 다음 일을 수행해야 한다.
 
@@ -558,13 +1242,22 @@ Health Check 실패 조건:
 - 메모리 사용률 `10%` 초과
 - 루트 디스크 사용률 `80%` 초과
 
-### 8.2 monitor.sh 예시 코드
+여기서 실패와 경고를 구분하는 것이 중요하다.  
+앱 프로세스가 없거나 포트가 열려 있지 않은 것은 서비스 자체가 동작하지 않는 상태다. 그래서 실패로 보고 `exit 1`로 종료한다.
+
+반면 CPU나 메모리 사용률이 높다는 것은 위험 신호지만, 곧바로 서비스가 죽었다는 뜻은 아니다.  
+그래서 경고를 출력하고 로그에는 남기되, 스크립트 자체를 실패로 종료하지 않는다.
+
+### 8.3 monitor.sh 예시 코드
 
 파일 경로:
 
 ```text
 /home/agent-admin/agent-app/bin/monitor.sh
 ```
+
+이 경로를 사용하는 이유는 앞에서 `/home/agent-admin/agent-app/bin`을 운영 스크립트 디렉토리로 만들었기 때문이다.  
+앱 파일, 키 파일, 로그 디렉토리처럼 스크립트 위치도 약속해 두면 나중에 cron에 등록하기 쉽다.
 
 ```bash
 #!/usr/bin/env bash
@@ -735,7 +1428,30 @@ main() {
 main "$@"
 ```
 
-### 8.3 파일 생성과 권한 설정
+이 스크립트에는 지금까지 배운 운영 요소가 한꺼번에 들어 있다.
+
+| 명령 또는 구문 | 역할 |
+|---|---|
+| `#!/usr/bin/env bash` | 이 파일을 Bash로 실행하겠다고 알려 준다 |
+| `set -u` | 정의되지 않은 변수를 사용하면 오류로 처리한다 |
+| `${변수:-기본값}` | 변수가 없을 때 사용할 기본값을 정한다 |
+| `pgrep -f` | 특정 패턴을 가진 프로세스를 찾는다 |
+| `ss -tuln` | 열린 포트 목록을 확인한다 |
+| `top -bn1` | CPU 상태를 한 번 출력한다 |
+| `free` | 메모리 사용량을 확인한다 |
+| `df /` | 루트 디스크 사용량을 확인한다 |
+| `awk` | 텍스트에서 필요한 값을 계산하거나 추출한다 |
+| `grep` | 필요한 줄만 고른다 |
+| `stat -c '%s'` | 파일 크기를 바이트 단위로 확인한다 |
+| `>>` | 파일 뒤에 내용을 추가한다 |
+
+`exit 1`은 실패를 의미한다.  
+앱 프로세스가 없거나 포트가 열려 있지 않으면 이 스크립트는 실패로 종료한다.
+
+반면 CPU, 메모리, 디스크 사용률이 임계값을 넘는 것은 곧바로 실패로 처리하지 않고 경고만 출력한다.  
+서버가 바쁜 상태일 수는 있지만, 앱이 죽은 것과는 성격이 다르기 때문이다.
+
+### 8.4 파일 생성과 권한 설정
 
 ```bash
 sudo vi /home/agent-admin/agent-app/bin/monitor.sh
@@ -743,10 +1459,13 @@ sudo chown agent-dev:agent-core /home/agent-admin/agent-app/bin/monitor.sh
 sudo chmod 750 /home/agent-admin/agent-app/bin/monitor.sh
 ```
 
+`monitor.sh`는 `agent-dev`가 작성하고, `agent-core` 그룹이 실행할 수 있게 둔다.  
+스크립트도 운영 파일이므로 아무 사용자나 읽고 실행하게 두지 않는다.
+
 확인:
 
 ```bash
-ls -l /home/agent-admin/agent-app/bin/monitor.sh
+sudo ls -l /home/agent-admin/agent-app/bin/monitor.sh
 ```
 
 기대 결과:
@@ -767,6 +1486,9 @@ ls -l /home/agent-admin/agent-app/bin/monitor.sh
 sudo -iu agent-admin
 /home/agent-admin/agent-app/bin/monitor.sh
 ```
+
+먼저 `agent-admin`으로 전환한 뒤 스크립트를 실행한다.  
+이렇게 해야 cron에서 실행될 사용자와 같은 조건으로 직접 테스트할 수 있다.
 
 기대 출력:
 
@@ -791,8 +1513,13 @@ DISK Used : 23%
 ### 9.2 로그 확인
 
 ```bash
-tail -n 5 /var/log/agent-app/monitor.log
+sudo tail -n 5 /var/log/agent-app/monitor.log
 ```
+
+`tail`은 파일의 마지막 부분을 보여 준다.  
+`-n 5`는 마지막 5줄만 보겠다는 뜻이다.
+
+로그 파일은 계속 누적되므로 전체를 매번 열기보다 마지막 몇 줄을 보는 방식이 실무에서도 자주 쓰인다.
 
 기대 결과:
 
@@ -811,11 +1538,32 @@ tail -n 5 /var/log/agent-app/monitor.log
 sudo crontab -u agent-admin -e
 ```
 
+`crontab`은 cron이 실행할 작업 목록을 편집하는 명령이다.  
+`-u agent-admin`은 `agent-admin` 사용자의 crontab을 다룬다는 뜻이고, `-e`는 edit의 의미다.
+
 다음 라인을 추가한다.
 
 ```cron
 * * * * * /home/agent-admin/agent-app/bin/monitor.sh >> /var/log/agent-app/monitor-cron.out 2>&1
 ```
+
+cron의 앞 다섯 칸은 시간 규칙이다.
+
+```text
+분 시 일 월 요일
+*  *  *  *  *
+```
+
+모든 칸이 `*`이면 매분 실행한다는 뜻이다.
+
+뒤쪽의 `>> /var/log/agent-app/monitor-cron.out 2>&1`는 cron 실행 결과를 파일에 남긴다.
+
+| 부분 | 의미 |
+|---|---|
+| `>>` | 표준 출력을 파일 뒤에 추가한다 |
+| `2>&1` | 표준 에러도 표준 출력과 같은 곳으로 보낸다 |
+
+cron은 조용히 실패할 수 있으므로, 별도의 출력 로그를 남겨 두면 문제를 찾기 쉽다.
 
 ### 10.2 등록 확인
 
@@ -823,20 +1571,26 @@ sudo crontab -u agent-admin -e
 sudo crontab -u agent-admin -l
 ```
 
+`-l`은 list의 의미다.  
+등록된 crontab 내용을 확인한다.
+
 ### 10.3 자동 실행 확인
 
 현재 로그 라인 수를 확인한다.
 
 ```bash
-wc -l /var/log/agent-app/monitor.log
+sudo wc -l /var/log/agent-app/monitor.log
 ```
+
+`wc`는 word count 명령이지만, `-l`을 붙이면 줄 수를 센다.  
+cron이 정상 동작한다면 시간이 지난 뒤 `monitor.log`의 줄 수가 늘어나야 한다.
 
 1분 이상 기다린 뒤 다시 확인한다.
 
 ```bash
 sleep 70
-wc -l /var/log/agent-app/monitor.log
-tail -n 5 /var/log/agent-app/monitor.log
+sudo wc -l /var/log/agent-app/monitor.log
+sudo tail -n 5 /var/log/agent-app/monitor.log
 ```
 
 라인 수가 증가했다면 cron 자동 실행이 정상이다.
@@ -905,10 +1659,10 @@ id agent-test
 기록할 명령:
 
 ```bash
-ls -ld /home/agent-admin/agent-app /home/agent-admin/agent-app/upload_files /home/agent-admin/agent-app/api_keys /var/log/agent-app
-getfacl /home/agent-admin/agent-app/upload_files
-getfacl /home/agent-admin/agent-app/api_keys
-getfacl /var/log/agent-app
+sudo ls -ld /home/agent-admin/agent-app /home/agent-admin/agent-app/upload_files /home/agent-admin/agent-app/api_keys /var/log/agent-app
+sudo getfacl /home/agent-admin/agent-app/upload_files
+sudo getfacl /home/agent-admin/agent-app/api_keys
+sudo getfacl /var/log/agent-app
 ```
 
 ### 11.6 앱 실행 기록
@@ -924,8 +1678,8 @@ getfacl /var/log/agent-app
 기록할 명령:
 
 ```bash
-/home/agent-admin/agent-app/bin/monitor.sh
-tail -n 5 /var/log/agent-app/monitor.log
+sudo -u agent-admin /home/agent-admin/agent-app/bin/monitor.sh
+sudo tail -n 5 /var/log/agent-app/monitor.log
 ```
 
 ### 11.8 cron 기록
@@ -934,10 +1688,10 @@ tail -n 5 /var/log/agent-app/monitor.log
 
 ```bash
 sudo crontab -u agent-admin -l
-wc -l /var/log/agent-app/monitor.log
+sudo wc -l /var/log/agent-app/monitor.log
 sleep 70
-wc -l /var/log/agent-app/monitor.log
-tail -n 5 /var/log/agent-app/monitor.log
+sudo wc -l /var/log/agent-app/monitor.log
+sudo tail -n 5 /var/log/agent-app/monitor.log
 ```
 
 ---
@@ -1032,6 +1786,24 @@ sudo chown agent-dev:agent-core /home/agent-admin/agent-app/bin/report.sh
 sudo chmod 750 /home/agent-admin/agent-app/bin/report.sh
 ```
 
+`report.sh`의 핵심은 `awk`다.  
+`awk`는 줄 단위 텍스트를 읽으면서 필요한 값을 추출하고 계산하는 도구다.
+
+이 리포트 스크립트에서 중요한 구문은 다음과 같다.
+
+| 구문 | 의미 |
+|---|---|
+| `LOG_FILE="${1:-...}"` | 첫 번째 인자가 있으면 그 파일을 쓰고, 없으면 기본 로그 파일을 사용한다 |
+| `[ ! -f "$LOG_FILE" ]` | 로그 파일이 일반 파일로 존재하지 않는지 검사한다 |
+| `substr($0, 2, 19)` | 한 줄 전체인 `$0`에서 날짜 부분만 잘라낸다 |
+| `NF` | 현재 줄의 필드 개수 |
+| `$i` | i번째 필드 |
+| `gsub()` | 문자열에서 특정 패턴을 제거하거나 바꾼다 |
+| `END { ... }` | 모든 줄을 다 읽은 뒤 마지막에 실행할 블록 |
+
+`monitor.log`가 일정한 형식으로 기록되기 때문에 `report.sh`가 평균, 최대, 최소를 계산할 수 있다.  
+로그 형식이 흔들리면 리포트도 흔들린다. 그래서 운영 자동화에서는 “기록 형식”도 중요한 약속이다.
+
 ---
 
 ## 13장. 보너스 2: 시간 기반 로그 보존 정책
@@ -1082,6 +1854,24 @@ fi
 find "$ARCHIVE_DIR" -type f -name '*.gz' -mtime +30 -print -delete
 ```
 
+이 스크립트는 오래된 로그를 압축하고, 너무 오래된 압축 파일을 지운다.
+
+| 명령 또는 구문 | 의미 |
+|---|---|
+| `gzip -c "$log_file"` | 원본 파일은 그대로 두고 압축 결과를 표준 출력으로 보낸다 |
+| `>` | 압축 결과를 새 파일로 저장한다 |
+| `: > "$log_file"` | 파일 내용을 비운다. 파일 자체는 남긴다 |
+| `basename "$log_file"` | 경로를 제외한 파일 이름만 가져온다 |
+| `date '+%Y%m%d%H%M%S'` | 아카이브 파일명에 붙일 현재 시각 문자열을 만든다 |
+| `find ... -mtime +7` | 수정된 지 7일이 지난 파일을 찾는다 |
+| `-print0` | 파일 이름을 null 문자로 구분해 안전하게 출력한다 |
+| `read -r -d ''` | null 문자로 구분된 파일 이름을 하나씩 읽는다 |
+| `-delete` | 찾은 파일을 삭제한다 |
+
+로그 보존 정책에서 중요한 점은 “압축”과 “삭제”를 구분하는 것이다.  
+최근 로그는 바로 확인할 수 있어야 하고, 오래된 로그는 디스크를 덜 쓰도록 압축한다.  
+너무 오래된 아카이브는 다시 삭제해 디스크가 끝없이 차는 일을 막는다.
+
 ---
 
 ## 14장. 장애 상황별 점검표
@@ -1097,8 +1887,8 @@ echo "$AGENT_PORT"
 echo "$AGENT_UPLOAD_DIR"
 echo "$AGENT_KEY_PATH"
 echo "$AGENT_LOG_DIR"
-ls -l "$AGENT_KEY_PATH"
-ls -ld "$AGENT_LOG_DIR"
+sudo ls -l "$AGENT_KEY_PATH"
+sudo ls -ld "$AGENT_LOG_DIR"
 ```
 
 자주 발생하는 원인:
@@ -1116,8 +1906,8 @@ ls -ld "$AGENT_LOG_DIR"
 ```bash
 pgrep -af 'agent-app'
 ss -tulnp | grep ':15034'
-ls -l /home/agent-admin/agent-app/bin/monitor.sh
-ls -ld /var/log/agent-app
+sudo ls -l /home/agent-admin/agent-app/bin/monitor.sh
+sudo ls -ld /var/log/agent-app
 ```
 
 자주 발생하는 원인:
@@ -1134,7 +1924,7 @@ ls -ld /var/log/agent-app
 ```bash
 sudo crontab -u agent-admin -l
 systemctl status cron
-tail -n 20 /var/log/agent-app/monitor-cron.out
+sudo tail -n 20 /var/log/agent-app/monitor-cron.out
 ```
 
 자주 발생하는 원인:
@@ -1156,13 +1946,13 @@ sudo ufw status verbose
 id agent-admin
 id agent-dev
 id agent-test
-ls -ld /home/agent-admin/agent-app /home/agent-admin/agent-app/upload_files /home/agent-admin/agent-app/api_keys /var/log/agent-app
-getfacl /home/agent-admin/agent-app/upload_files
-getfacl /home/agent-admin/agent-app/api_keys
-getfacl /var/log/agent-app
+sudo ls -ld /home/agent-admin/agent-app /home/agent-admin/agent-app/upload_files /home/agent-admin/agent-app/api_keys /var/log/agent-app
+sudo getfacl /home/agent-admin/agent-app/upload_files
+sudo getfacl /home/agent-admin/agent-app/api_keys
+sudo getfacl /var/log/agent-app
 ss -tulnp | grep ':15034'
-/home/agent-admin/agent-app/bin/monitor.sh
-tail -n 5 /var/log/agent-app/monitor.log
+sudo -u agent-admin /home/agent-admin/agent-app/bin/monitor.sh
+sudo tail -n 5 /var/log/agent-app/monitor.log
 sudo crontab -u agent-admin -l
 ```
 
