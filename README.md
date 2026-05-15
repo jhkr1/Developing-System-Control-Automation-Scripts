@@ -1513,7 +1513,7 @@ DISK Used : 23%
 ### 9.2 로그 확인
 
 ```bash
-sudo tail -n 5 /var/log/agent-app/monitor.log
+tail -n 5 /var/log/agent-app/monitor.log
 ```
 
 `tail`은 파일의 마지막 부분을 보여 준다.  
@@ -1535,7 +1535,7 @@ sudo tail -n 5 /var/log/agent-app/monitor.log
 ### 10.1 agent-admin crontab 편집
 
 ```bash
-sudo crontab -u agent-admin -e
+crontab -u agent-admin -e
 ```
 
 `crontab`은 cron이 실행할 작업 목록을 편집하는 명령이다.  
@@ -1568,7 +1568,7 @@ cron은 조용히 실패할 수 있으므로, 별도의 출력 로그를 남겨 
 ### 10.2 등록 확인
 
 ```bash
-sudo crontab -u agent-admin -l
+crontab -u agent-admin -l
 ```
 
 `-l`은 list의 의미다.  
@@ -1579,7 +1579,7 @@ sudo crontab -u agent-admin -l
 현재 로그 라인 수를 확인한다.
 
 ```bash
-sudo wc -l /var/log/agent-app/monitor.log
+wc -l /var/log/agent-app/monitor.log
 ```
 
 `wc`는 word count 명령이지만, `-l`을 붙이면 줄 수를 센다.  
@@ -1589,8 +1589,8 @@ cron이 정상 동작한다면 시간이 지난 뒤 `monitor.log`의 줄 수가 
 
 ```bash
 sleep 70
-sudo wc -l /var/log/agent-app/monitor.log
-sudo tail -n 5 /var/log/agent-app/monitor.log
+wc -l /var/log/agent-app/monitor.log
+tail -n 5 /var/log/agent-app/monitor.log
 ```
 
 라인 수가 증가했다면 cron 자동 실행이 정상이다.
