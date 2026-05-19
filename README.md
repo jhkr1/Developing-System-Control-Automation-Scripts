@@ -1651,6 +1651,59 @@ main "$@"
 반면 CPU, 메모리, 디스크 사용률이 임계값을 넘는 것은 곧바로 실패로 처리하지 않고 경고만 출력한다.  
 서버가 바쁜 상태일 수는 있지만, 앱이 죽은 것과는 성격이 다르기 때문이다.
 
+#### `>`와 `>>`의 차이
+
+로그를 이해하려면 리다이렉션 기호부터 구분해야 한다.  
+리다이렉션은 명령의 출력 결과를 화면이 아니라 파일로 보내는 기능이다.
+
+| 기호 | 의미 | 기존 파일 내용 |
+|---|---|---|
+| `>` | 파일에 새로 쓴다 | 기존 내용이 사라진다 |
+| `>>` | 파일 뒤에 이어 쓴다 | 기존 내용이 유지된다 |
+
+작은 예시로 보면 차이가 분명하다.
+
+```bash
+echo "first" > sample.log
+echo "second" > sample.log
+cat sample.log
+```
+
+결과:
+
+```text
+second
+```
+
+두 번째 명령도 `>`를 사용했기 때문에 `first`가 사라지고 `second`만 남는다.  
+이번에는 `>>`를 사용한다.
+
+```bash
+echo "first" > sample.log
+echo "second" >> sample.log
+cat sample.log
+```
+
+결과:
+
+```text
+first
+second
+```
+
+`>>`는 기존 내용을 지우지 않고 맨 아래에 새 줄을 붙인다.
+
+`monitor.sh`의 목적은 “지금 한 번의 상태”만 저장하는 것이 아니라, 시간에 따라 상태가 어떻게 변했는지 누적 기록을 남기는 것이다.  
+그래서 다음 줄에서는 반드시 `>>`를 사용한다.
+
+```bash
+printf '[%s] PID:%s CPU:%s%% MEM:%s%% DISK_USED:%s%%\n' \
+  "$timestamp" "$pid" "$cpu_usage" "$mem_usage" "$disk_usage" >> "$LOG_FILE"
+```
+
+만약 여기서 `>`를 쓰면 `monitor.sh`가 실행될 때마다 이전 로그가 지워지고 마지막 한 줄만 남는다.  
+그러면 장애가 발생했을 때 “5분 전에는 CPU가 어땠는지”, “1분 전에는 앱이 살아 있었는지”를 추적할 수 없다. 운영 로그에는 누적이 필요하기 때문에 `>>`가 맞다.
+
 ### 8.4 monitor.sh 코드 읽는 법
 
 처음 Bash 스크립트를 볼 때는 위에서 아래로 모든 줄을 한 번에 이해하려고 하면 어렵다.  
@@ -1758,8 +1811,83 @@ rotate_log_if_needed "$LOG_FILE"
 7. 새 `monitor.log`를 빈 파일로 다시 만든다.
 8. 10개를 초과한 오래된 회전 파일은 삭제한다.
 
+더 쉽게 말하면, 로그 회전은 “가득 찬 현재 노트를 보관함으로 옮기고, 새 빈 노트를 꺼내는 일”이다.  
+`monitor.log`는 지금 쓰고 있는 노트이고, `monitor.log.1`, `monitor.log.2`는 이전에 쓰던 노트들이다.
+
+예를 들어 회전 전 파일이 이렇게 있다고 생각해 보자.
+
+```text
+monitor.log      현재 쓰는 로그, 10MB 이상으로 커짐
+monitor.log.1    바로 이전 로그
+monitor.log.2    그보다 더 이전 로그
+monitor.log.3    더 오래된 로그
+```
+
+회전이 일어나면 번호가 뒤로 밀린다.
+
+```text
+monitor.log.3  ->  monitor.log.4
+monitor.log.2  ->  monitor.log.3
+monitor.log.1  ->  monitor.log.2
+monitor.log    ->  monitor.log.1
+새 monitor.log  빈 파일로 생성
+```
+
+결과는 이렇게 된다.
+
+```text
+monitor.log      새로 쓰기 시작할 빈 로그
+monitor.log.1    방금까지 쓰던 큰 로그
+monitor.log.2    한 단계 더 오래된 로그
+monitor.log.3    더 오래된 로그
+monitor.log.4    가장 오래된 로그
+```
+
+이렇게 하는 이유는 두 가지다.
+
+- `monitor.log`가 끝없이 커져 디스크를 채우는 것을 막는다.
+- 최근 로그 몇 개는 남겨 두어 장애 원인을 나중에 확인할 수 있게 한다.
+
+`MAX_ROTATED_FILES=10`은 오래된 로그를 최대 10개까지만 보관하겠다는 뜻이다.  
+`monitor.log.11`처럼 10개를 초과한 파일이 생기면 삭제해 디스크 사용량을 제한한다.
+
 여기서 `return 0`은 “이 함수는 정상적으로 끝났다”는 뜻이다.  
 반대로 `return 1`은 “이 함수의 결과는 실패다”라는 의미로 사용한다.
+
+Bash에서는 숫자 `0`이 성공이고, `0`이 아닌 값은 실패다.  
+처음에는 어색하지만, “0은 문제가 0개라서 성공”이라고 생각하면 기억하기 쉽다.
+
+아주 작은 예시는 다음과 같다.
+
+```bash
+check_file_exists() {
+  if [ -f "$1" ]; then
+    return 0
+  fi
+
+  return 1
+}
+
+if check_file_exists "/var/log/agent-app/monitor.log"; then
+  echo "log file exists"
+else
+  echo "log file missing"
+fi
+```
+
+파일이 있으면 `return 0`으로 성공을 알리고, `then` 쪽이 실행된다.  
+파일이 없으면 `return 1`로 실패를 알리고, `else` 쪽이 실행된다.
+
+`rotate_log_if_needed`에서 `return 0`이 나오는 상황은 “로그 파일이 10MB보다 작아서 회전할 필요가 없고, 함수가 정상적으로 끝났다”는 뜻이다.
+
+```bash
+if [ "$log_size" -lt "$MAX_LOG_SIZE" ]; then
+  return 0
+fi
+```
+
+여기서 `return 0`은 “로그가 작으니 아무것도 하지 않고 정상 종료한다”에 가깝다.  
+즉 “회전을 했다”는 뜻이 아니라 “문제가 없으니 이 함수의 일을 끝낸다”는 뜻이다.
 
 #### 프로세스 확인
 
