@@ -1971,185 +1971,7 @@ sudo tail -n 5 /var/log/agent-app/monitor.log
 
 ---
 
-## 12장. 보너스 1: report.sh 요약 리포트
-
-`monitor.log`를 분석해 CPU, MEM, DISK 사용률의 평균/최대/최소를 출력한다.
-
-파일 경로 예시:
-
-```text
-/home/agent-admin/agent-app/bin/report.sh
-```
-
-```bash
-#!/usr/bin/env bash
-set -u
-
-LOG_FILE="${1:-/var/log/agent-app/monitor.log}"
-
-if [ ! -f "$LOG_FILE" ]; then
-  echo "[ERROR] Log file not found: $LOG_FILE" >&2
-  exit 1
-fi
-
-awk '
-{
-  timestamp = substr($0, 2, 19)
-
-  for (i = 1; i <= NF; i++) {
-    if ($i ~ /^CPU:/) {
-      cpu = $i
-      gsub(/^CPU:|%$/, "", cpu)
-    }
-    if ($i ~ /^MEM:/) {
-      mem = $i
-      gsub(/^MEM:|%$/, "", mem)
-    }
-    if ($i ~ /^DISK_USED:/) {
-      disk = $i
-      gsub(/^DISK_USED:|%$/, "", disk)
-    }
-  }
-
-  count++
-
-  cpu_sum += cpu
-  mem_sum += mem
-  disk_sum += disk
-
-  if (count == 1 || cpu > cpu_max) { cpu_max = cpu; cpu_max_time = timestamp }
-  if (count == 1 || cpu < cpu_min) { cpu_min = cpu; cpu_min_time = timestamp }
-
-  if (count == 1 || mem > mem_max) { mem_max = mem; mem_max_time = timestamp }
-  if (count == 1 || mem < mem_min) { mem_min = mem; mem_min_time = timestamp }
-
-  if (count == 1 || disk > disk_max) { disk_max = disk; disk_max_time = timestamp }
-  if (count == 1 || disk < disk_min) { disk_min = disk; disk_min_time = timestamp }
-}
-END {
-  if (count == 0) {
-    print "[WARNING] No samples found"
-    exit 0
-  }
-
-  print "====== STATISTICS REPORT ======"
-  print "[CPU]"
-  printf "Average : %.1f%%\n", cpu_sum / count
-  printf "Maximum : %.1f%% at %s\n", cpu_max, cpu_max_time
-  printf "Minimum : %.1f%% at %s\n", cpu_min, cpu_min_time
-
-  print "[Memory]"
-  printf "Average : %.1f%%\n", mem_sum / count
-  printf "Maximum : %.1f%% at %s\n", mem_max, mem_max_time
-  printf "Minimum : %.1f%% at %s\n", mem_min, mem_min_time
-
-  print "[Disk]"
-  printf "Average : %.1f%%\n", disk_sum / count
-  printf "Maximum : %.1f%% at %s\n", disk_max, disk_max_time
-  printf "Minimum : %.1f%% at %s\n", disk_min, disk_min_time
-
-  print "[Samples]"
-  printf "Data Points: %d samples\n", count
-}
-' "$LOG_FILE"
-```
-
-권한:
-
-```bash
-sudo chown agent-dev:agent-core /home/agent-admin/agent-app/bin/report.sh
-sudo chmod 750 /home/agent-admin/agent-app/bin/report.sh
-```
-
-`report.sh`의 핵심은 `awk`다.  
-`awk`는 줄 단위 텍스트를 읽으면서 필요한 값을 추출하고 계산하는 도구다.
-
-이 리포트 스크립트에서 중요한 구문은 다음과 같다.
-
-| 구문 | 의미 |
-|---|---|
-| `LOG_FILE="${1:-...}"` | 첫 번째 인자가 있으면 그 파일을 쓰고, 없으면 기본 로그 파일을 사용한다 |
-| `[ ! -f "$LOG_FILE" ]` | 로그 파일이 일반 파일로 존재하지 않는지 검사한다 |
-| `substr($0, 2, 19)` | 한 줄 전체인 `$0`에서 날짜 부분만 잘라낸다 |
-| `NF` | 현재 줄의 필드 개수 |
-| `$i` | i번째 필드 |
-| `gsub()` | 문자열에서 특정 패턴을 제거하거나 바꾼다 |
-| `END { ... }` | 모든 줄을 다 읽은 뒤 마지막에 실행할 블록 |
-
-`monitor.log`가 일정한 형식으로 기록되기 때문에 `report.sh`가 평균, 최대, 최소를 계산할 수 있다.  
-로그 형식이 흔들리면 리포트도 흔들린다. 그래서 운영 자동화에서는 “기록 형식”도 중요한 약속이다.
-
----
-
-## 13장. 보너스 2: 시간 기반 로그 보존 정책
-
-### 13.1 정책
-
-- 7일 이상 지난 `/var/log/agent-app/*.log` 파일 압축
-- 압축 파일을 `/var/log/monitor/agent-app/archive/`로 이동
-- 30일 이상 지난 `.gz` 아카이브 삭제
-
-### 13.2 archive_logs.sh 예시
-
-```bash
-#!/usr/bin/env bash
-set -u
-
-SOURCE_DIR="/var/log/agent-app"
-ARCHIVE_DIR="/var/log/monitor/agent-app/archive"
-
-if [ ! -d "$SOURCE_DIR" ]; then
-  echo "[WARNING] Source directory not found: $SOURCE_DIR"
-  exit 0
-fi
-
-if ! mkdir -p "$ARCHIVE_DIR"; then
-  echo "[ERROR] Cannot create archive directory: $ARCHIVE_DIR" >&2
-  exit 1
-fi
-
-if [ ! -w "$ARCHIVE_DIR" ]; then
-  echo "[ERROR] Archive directory is not writable: $ARCHIVE_DIR" >&2
-  exit 1
-fi
-
-found_old_logs=0
-
-while IFS= read -r -d '' log_file; do
-  found_old_logs=1
-  gzip -c "$log_file" > "$ARCHIVE_DIR/$(basename "$log_file").$(date '+%Y%m%d%H%M%S').gz"
-  : > "$log_file"
-  echo "[INFO] Archived and truncated: $log_file"
-done < <(find "$SOURCE_DIR" -maxdepth 1 -type f -name '*.log' -mtime +7 -print0)
-
-if [ "$found_old_logs" -eq 0 ]; then
-  echo "[INFO] No log files older than 7 days"
-fi
-
-find "$ARCHIVE_DIR" -type f -name '*.gz' -mtime +30 -print -delete
-```
-
-이 스크립트는 오래된 로그를 압축하고, 너무 오래된 압축 파일을 지운다.
-
-| 명령 또는 구문 | 의미 |
-|---|---|
-| `gzip -c "$log_file"` | 원본 파일은 그대로 두고 압축 결과를 표준 출력으로 보낸다 |
-| `>` | 압축 결과를 새 파일로 저장한다 |
-| `: > "$log_file"` | 파일 내용을 비운다. 파일 자체는 남긴다 |
-| `basename "$log_file"` | 경로를 제외한 파일 이름만 가져온다 |
-| `date '+%Y%m%d%H%M%S'` | 아카이브 파일명에 붙일 현재 시각 문자열을 만든다 |
-| `find ... -mtime +7` | 수정된 지 7일이 지난 파일을 찾는다 |
-| `-print0` | 파일 이름을 null 문자로 구분해 안전하게 출력한다 |
-| `read -r -d ''` | null 문자로 구분된 파일 이름을 하나씩 읽는다 |
-| `-delete` | 찾은 파일을 삭제한다 |
-
-로그 보존 정책에서 중요한 점은 “압축”과 “삭제”를 구분하는 것이다.  
-최근 로그는 바로 확인할 수 있어야 하고, 오래된 로그는 디스크를 덜 쓰도록 압축한다.  
-너무 오래된 아카이브는 다시 삭제해 디스크가 끝없이 차는 일을 막는다.
-
----
-
-## 14장. 장애 상황별 점검표
+## 12장. 장애 상황별 점검표
 
 ### 앱이 실행되지 않을 때
 
@@ -2212,7 +2034,7 @@ sudo tail -n 20 /var/log/agent-app/monitor-cron.out
 
 ---
 
-## 15장. 최종 제출 전 점검
+## 13장. 최종 제출 전 점검
 
 최종 제출 전에는 아래 순서로 한 번 더 확인한다.
 
@@ -2238,7 +2060,7 @@ sudo crontab -u agent-admin -l
 
 ---
 
-## 16장. 이 미션에서 설명할 수 있어야 하는 것
+## 14장. 이 미션에서 설명할 수 있어야 하는 것
 
 ### SSH 포트 변경과 Root 원격 접속 차단
 
